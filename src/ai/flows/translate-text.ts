@@ -1,3 +1,4 @@
+
 'use server';
 /**
  * @fileOverview Translates text or an array of texts to a specified target language using an AI model.
@@ -91,7 +92,8 @@ const translateTextFlowRevised = ai.defineFlow<
       // Log the input being sent to the prompt
       // console.log("Sending to prompt:", JSON.stringify(promptInputPayload, null, 2));
 
-       const promptResult = await ai.run(prompt, promptInputPayload);
+       // Correctly invoke the defined prompt
+       const promptResult = await prompt(promptInputPayload);
 
        // Log the raw output received from the prompt
       // console.log("Received from prompt:", JSON.stringify(promptResult.output, null, 2));
@@ -140,3 +142,4 @@ const translateTextFlowRevised = ai.defineFlow<
 // The export async function translateText already points to translateTextFlowRevised at the top.
 // No need for reassignment here.
 // Remove any potential duplicate/old flow definitions or reassignments.
+
