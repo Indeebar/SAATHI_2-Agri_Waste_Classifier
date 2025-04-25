@@ -1,14 +1,16 @@
+// File: src/app/page.tsx
 'use client';
 
 import type { ChangeEvent } from 'react';
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { UploadCloud, Leaf, Pencil, RotateCcw, AlertCircle, Loader2, Info } from 'lucide-react'; // Added Info, Loader2
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"; // Added Dialog components
+import { UploadCloud, Leaf, Pencil, RotateCcw, AlertCircle, Loader2, Info, Camera, VideoOff } from 'lucide-react'; // Added Camera, VideoOff
 import Image from 'next/image';
 import { classifyWaste, type ClassifyWasteOutput } from '@/ai/flows/classify-waste';
 import { getWasteDescription } from '@/ai/flows/get-waste-description'; // Import the new flow
@@ -32,20 +34,26 @@ export default function AgriWastePage() {
   const [wasteDescription, setWasteDescription] = useState<string | null>(null); // State for description
   const [isFetchingDescription, setIsFetchingDescription] = useState(false); // Loading state for description
   const [isLoading, setIsLoading] = useState(false);
+  const [isClassifying, setIsClassifying] = useState(false); // Specific loading state for classification
   const [error, setError] = useState<string | null>(null);
   const [isCorrecting, setIsCorrecting] = useState(false);
   const [manualSelection, setManualSelection] = useState<string | null>(null);
+  const [showCameraView, setShowCameraView] = useState(false);
+  const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null); // Ref for canvas element
+  const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
   const { toast } = useToast();
 
    // Fetch description when prediction changes
    useEffect(() => {
-    if (prediction?.wasteType) {
+    if (prediction?.wasteType && !isCorrecting) { // Only fetch if not correcting
       fetchDescription(prediction.wasteType);
     } else {
-      setWasteDescription(null); // Clear description if no prediction
+      setWasteDescription(null); // Clear description if no prediction or correcting
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prediction]); // Dependency on prediction object
+  }, [prediction, isCorrecting]); // Dependency on prediction object and correction state
 
   const fetchDescription = useCallback(async (wasteType: string) => {
     setIsFetchingDescription(true);
@@ -66,41 +74,48 @@ export default function AgriWastePage() {
     }
   }, [toast]);
 
+  const processImage = useCallback(async (dataUri: string) => {
+    setIsClassifying(true); // Set classifying state
+    setIsLoading(true); // Keep general loading state for UI disabling
+    setError(null);
+    setPrediction(null); // Clear previous prediction
+    setWasteDescription(null); // Clear previous description
+    setIsCorrecting(false); // Ensure correction mode is off
+
+    try {
+      const result = await classifyWaste({ photoDataUri: dataUri });
+      setPrediction(result); // This will trigger the useEffect for description fetching
+      toast({
+        title: "Classification Successful",
+        description: `Detected: ${result.wasteType}`,
+      });
+    } catch (err) {
+      console.error("Classification error:", err);
+      const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred during classification.';
+      setError(`Classification failed: ${errorMessage}`);
+      setPrediction(null);
+      toast({
+        variant: "destructive",
+        title: "Classification Failed",
+        description: errorMessage,
+      });
+    } finally {
+      setIsClassifying(false); // Reset classifying state
+      setIsLoading(false); // Reset general loading state
+    }
+  }, [toast]);
 
   const handleImageUpload = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      // Reset previous state
-      resetState(false); // Don't clear image immediately
+      resetState(false); // Don't clear image immediately, but clear predictions etc.
 
       const reader = new FileReader();
       reader.onloadend = async () => {
         const dataUri = reader.result as string;
         setImagePreview(URL.createObjectURL(file)); // For display
         setImageDataUri(dataUri); // For sending to AI
-
-        setIsLoading(true);
-        setError(null);
-        try {
-          const result = await classifyWaste({ photoDataUri: dataUri });
-          setPrediction(result); // This will trigger the useEffect for description fetching
-          toast({
-            title: "Classification Successful",
-            description: `Detected: ${result.wasteType}`,
-          });
-        } catch (err) {
-          console.error("Classification error:", err);
-          const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred during classification.';
-          setError(`Classification failed: ${errorMessage}`);
-          setPrediction(null); // Clear previous prediction on error
-          toast({
-            variant: "destructive",
-            title: "Classification Failed",
-            description: errorMessage,
-          });
-        } finally {
-          setIsLoading(false);
-        }
+        processImage(dataUri); // Process the image
       };
       reader.onerror = () => {
         setError("Failed to read the file.");
@@ -115,36 +130,35 @@ export default function AgriWastePage() {
       };
       reader.readAsDataURL(file);
     }
-  }, [toast]);
+  }, [toast, processImage]);
 
   const handleManualSelect = (value: string) => {
     setManualSelection(value);
-    // Update the "prediction" to reflect the manual choice for consistency
-    setPrediction({ wasteType: value, confidence: 1.0 }); // Assume 100% confidence for manual selection
+    setPrediction({ wasteType: value, confidence: 1.0 }); // Update prediction state
     setIsCorrecting(false);
     toast({
       title: "Manual Selection",
       description: `Selected: ${value}`,
     });
-    // Fetch description for manually selected type
-    // fetchDescription(value); // This is handled by the useEffect now
+     // Fetch description for manually selected type (handled by useEffect)
   };
 
   const resetState = (clearImage: boolean = true) => {
     if (clearImage) {
       setImagePreview(null);
       setImageDataUri(null);
-       // Clear file input value if applicable (requires ref)
-       const fileInput = document.getElementById('file-upload') as HTMLInputElement;
-       if (fileInput) {
-         fileInput.value = '';
-       }
+      // Clear file input value
+      const fileInput = document.getElementById('file-upload') as HTMLInputElement;
+      if (fileInput) {
+        fileInput.value = '';
+      }
     }
     setPrediction(null);
-    setWasteDescription(null); // Clear description
-    setIsFetchingDescription(false); // Reset description loading state
+    setWasteDescription(null);
+    setIsFetchingDescription(false);
     setError(null);
     setIsLoading(false);
+    setIsClassifying(false);
     setIsCorrecting(false);
     setManualSelection(null);
   };
@@ -155,9 +169,135 @@ export default function AgriWastePage() {
     return 'border-red-500'; // Low confidence
   };
 
+  // ---- Camera Functionality ----
+
+  const requestCameraPermission = async () => {
+    if (hasCameraPermission === false) {
+        toast({
+            variant: 'destructive',
+            title: 'Camera Access Previously Denied',
+            description: 'Please enable camera permissions in your browser settings and refresh the page.',
+        });
+        return false;
+    }
+    if (hasCameraPermission === true) return true; // Already granted
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        streamRef.current = stream; // Store the stream
+        setHasCameraPermission(true);
+        if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+        }
+        return true;
+    } catch (error) {
+        console.error('Error accessing camera:', error);
+        setHasCameraPermission(false);
+        toast({
+            variant: 'destructive',
+            title: 'Camera Access Denied',
+            description: 'Please enable camera permissions in your browser settings to use this feature.',
+        });
+        return false;
+    }
+};
+
+  const handleTakePhotoClick = async () => {
+    const permissionGranted = await requestCameraPermission();
+    if (permissionGranted) {
+        setShowCameraView(true);
+    }
+  };
+
+  const handleCapturePhoto = useCallback(() => {
+    if (videoRef.current && canvasRef.current) {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+
+      // Set canvas dimensions to match video
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      // Draw current video frame onto canvas
+      const context = canvas.getContext('2d');
+      if (context) {
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Get data URI from canvas
+        const dataUri = canvas.toDataURL('image/jpeg'); // Or 'image/png'
+
+        // Update state and process
+        resetState(false); // Clear previous results but keep camera open if needed
+        setImagePreview(dataUri);
+        setImageDataUri(dataUri);
+        processImage(dataUri);
+
+        // Close camera view and stop stream
+        setShowCameraView(false);
+
+      } else {
+         setError("Could not get canvas context to capture photo.");
+          toast({
+            variant: "destructive",
+            title: "Capture Error",
+            description: "Failed to get canvas context.",
+          });
+      }
+    } else {
+       setError("Camera or canvas element not ready.");
+        toast({
+            variant: "destructive",
+            title: "Capture Error",
+            description: "Camera or canvas not available.",
+        });
+    }
+  }, [processImage, toast]);
+
+
+  // Effect to stop camera stream when dialog is closed or component unmounts
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+        console.log("Camera stream stopped.");
+      }
+    };
+  }, []);
+
+   // Effect to manage stream when dialog opens/closes
+   useEffect(() => {
+    if (showCameraView) {
+      // Ensure permission is requested again if needed, or stream is started
+      requestCameraPermission().then(granted => {
+        if (granted && videoRef.current && streamRef.current) {
+          videoRef.current.srcObject = streamRef.current;
+          videoRef.current.play().catch(err => console.error("Video play error:", err));
+        } else if (!granted) {
+            // If permission was denied after opening dialog, close it
+             setShowCameraView(false);
+        }
+      });
+    } else {
+      // Stop stream tracks when dialog closes
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null; // Clear the ref
+         if (videoRef.current) {
+           videoRef.current.srcObject = null; // Clear video source
+         }
+        console.log("Camera stream stopped on dialog close.");
+      }
+    }
+  }, [showCameraView]);
+
+
   return (
     <div className="flex flex-col items-center space-y-6 md:space-y-8">
       <h1 className="text-3xl md:text-4xl font-bold text-center text-primary">AS SAATHI - Agricultural Waste Detector</h1>
+
+       {/* Hidden Canvas for Capturing Photo */}
+       <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
 
       <Card className="w-full max-w-3xl shadow-lg">
         <CardHeader>
@@ -167,7 +307,8 @@ export default function AgriWastePage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col md:flex-row gap-4 items-center md:items-start">
-          <div className="flex flex-col sm:flex-row md:flex-col gap-4 w-full md:w-auto">
+          {/* Button Container */}
+          <div className="flex flex-col sm:flex-row md:flex-col gap-4 w-full md:w-auto shrink-0">
              {/* Hidden file input */}
              <input
                 type="file"
@@ -175,31 +316,41 @@ export default function AgriWastePage() {
                 accept="image/*"
                 onChange={handleImageUpload}
                 style={{ display: 'none' }}
-                disabled={isLoading}
+                disabled={isLoading || isClassifying}
               />
-             {/* "Upload Photo" Button - Triggers file input */}
+             {/* "Upload Photo" Button */}
             <Button
               variant="outline"
               className="border-2 border-dashed border-primary text-primary hover:bg-accent hover:text-accent-foreground w-full sm:w-auto md:w-full"
               onClick={() => document.getElementById('file-upload')?.click()}
-              disabled={isLoading}
+              disabled={isLoading || isClassifying}
             >
               <UploadCloud className="mr-2 h-4 w-4" />
-              {imagePreview ? 'Change Photo' : 'Upload Photo'}
+              {imagePreview ? 'Change Upload' : 'Upload Photo'}
             </Button>
-              {/* Add placeholder for "Take a Photo" if needed */}
-              {/* <Button variant="outline" className="border-2 border-dashed border-primary text-primary hover:bg-accent hover:text-accent-foreground w-full sm:w-auto md:w-full" disabled>
+             {/* "Take a Photo" Button */}
+            <Button
+                variant="default" // Solid button
+                className="bg-primary text-primary-foreground hover:bg-primary/90 w-full sm:w-auto md:w-full"
+                onClick={handleTakePhotoClick}
+                disabled={isLoading || isClassifying || hasCameraPermission === false} // Disable if loading or permission denied
+            >
                 <Camera className="mr-2 h-4 w-4" />
-                Take a Photo (Not Impl.)
-              </Button> */}
+                Take a Photo
+            </Button>
+             {hasCameraPermission === false && (
+                <p className="text-xs text-destructive text-center md:text-left">Camera access denied.</p>
+            )}
           </div>
+          {/* Image Preview Box */}
           <div
             className={`flex-grow w-full h-48 md:h-64 rounded-md flex items-center justify-center bg-[hsl(var(--image-preview-bg))] p-2 border border-dashed ${imagePreview ? 'border-primary' : 'border-gray-300'}`}
           >
-            {isLoading ? (
+            {isClassifying ? ( // Use isClassifying here
               <div className="text-center space-y-2">
-                <p className="text-muted-foreground">Processing...</p>
-                <Progress value={undefined} className="w-3/4 mx-auto" /> {/* Removed animation, handled by component */}
+                 <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+                <p className="text-muted-foreground">Classifying...</p>
+                {/* <Progress value={undefined} className="w-3/4 mx-auto" /> */}
               </div>
             ) : imagePreview ? (
               <Image
@@ -216,6 +367,43 @@ export default function AgriWastePage() {
         </CardContent>
       </Card>
 
+        {/* Camera View Dialog */}
+      <Dialog open={showCameraView} onOpenChange={setShowCameraView}>
+        <DialogContent className="sm:max-w-[600px]">
+            <DialogHeader>
+            <DialogTitle>Take a Photo</DialogTitle>
+            </DialogHeader>
+            <div className="my-4">
+            {/* Video Element */}
+            <video ref={videoRef} className="w-full aspect-video rounded-md bg-muted" autoPlay muted playsInline />
+
+            {/* Permission Status Messages */}
+             {hasCameraPermission === null && (
+                <div className="mt-2 text-center text-muted-foreground">Requesting camera access...</div>
+            )}
+            {hasCameraPermission === false && (
+                <Alert variant="destructive" className="mt-4">
+                    <VideoOff className="h-4 w-4"/>
+                    <AlertTitle>Camera Access Denied</AlertTitle>
+                    <AlertDescription>
+                        Please allow camera access in your browser settings and refresh the page to use this feature.
+                    </AlertDescription>
+                </Alert>
+            )}
+            </div>
+            <DialogFooter>
+             <DialogClose asChild>
+                 <Button type="button" variant="outline">Cancel</Button>
+             </DialogClose>
+            <Button type="button" onClick={handleCapturePhoto} disabled={!hasCameraPermission}>
+                <Camera className="mr-2 h-4 w-4" />
+                Capture Photo
+            </Button>
+            </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+
       {error && (
          <Alert variant="destructive" className="w-full max-w-3xl shadow-md">
            <AlertCircle className="h-4 w-4" />
@@ -224,7 +412,8 @@ export default function AgriWastePage() {
          </Alert>
       )}
 
-      {(prediction || isCorrecting) && (
+      {/* Prediction and Details Card */}
+      {(prediction || isCorrecting) && !isClassifying && (
         <Card className="w-full max-w-3xl shadow-lg">
           <CardHeader>
             <CardTitle className="text-2xl flex items-center gap-2">
@@ -236,7 +425,7 @@ export default function AgriWastePage() {
             {isCorrecting ? (
                <div className="space-y-2">
                  <Label htmlFor="manual-waste-select">Select Correct Waste Type:</Label>
-                 <Select onValueChange={handleManualSelect} value={manualSelection ?? ''}>
+                 <Select onValueChange={handleManualSelect} value={manualSelection ?? prediction?.wasteType ?? ''}>
                    <SelectTrigger id="manual-waste-select" className="w-full">
                      <SelectValue placeholder="Choose waste type..." />
                    </SelectTrigger>
@@ -248,7 +437,10 @@ export default function AgriWastePage() {
                      ))}
                    </SelectContent>
                  </Select>
-                 <Button variant="outline" size="sm" onClick={() => setIsCorrecting(false)}>Cancel</Button>
+                  <div className="flex gap-2 pt-2">
+                    <Button variant="outline" size="sm" onClick={() => setIsCorrecting(false)}>Cancel</Button>
+                  {/* Optionally add a "Confirm Correction" button if needed */}
+                  </div>
                </div>
             ) : prediction ? (
               <div className={`space-y-2 border-l-4 p-4 rounded ${getConfidenceColor(prediction.confidence)} bg-card`}>
@@ -260,7 +452,11 @@ export default function AgriWastePage() {
                  <Button
                   variant="link"
                   className="p-0 h-auto text-sm text-primary hover:underline"
-                  onClick={() => setIsCorrecting(true)}
+                  onClick={() => {
+                    setIsCorrecting(true);
+                    setManualSelection(prediction.wasteType); // Pre-fill select with current prediction
+                  }}
+                  disabled={isLoading}
                 >
                   <Pencil className="mr-1 h-3 w-3" />
                   Not correct? Select manually
@@ -268,8 +464,8 @@ export default function AgriWastePage() {
               </div>
             ) : null}
           </CardContent>
-          {/* Details Section */}
-          {prediction && (
+          {/* Details Section - only show if NOT correcting and prediction exists */}
+          {prediction && !isCorrecting && (
             <CardFooter className="flex flex-col items-start space-y-4 border-t pt-4">
                <h3 className="text-lg font-semibold flex items-center gap-2">
                  <Info className="text-primary h-5 w-5" />
@@ -284,42 +480,40 @@ export default function AgriWastePage() {
                  ) : wasteDescription ? (
                    <p>{wasteDescription}</p>
                  ) : (
-                   <p className="italic">No description available.</p> // Placeholder if description is null/empty
+                   <p className="italic">No description available.</p>
                  )}
                </div>
-               {/* Placeholder for Translation and TTS */}
-               {/* <div className="flex justify-between w-full items-center pt-4 border-t mt-4">
-                 <Button variant="ghost" size="icon" className="text-primary hover:bg-accent">
+               {/* Placeholder for Translation and TTS (Future Feature) */}
+               {/*
+               <div className="flex justify-between w-full items-center pt-4 border-t mt-4 opacity-50">
+                 <Button variant="ghost" size="icon" className="text-primary hover:bg-accent" disabled>
                    <Volume2 className="h-5 w-5" />
                    <span className="sr-only">Read aloud</span>
                  </Button>
                  <div className="flex items-center gap-2">
                    <Label htmlFor="language-select" className="text-sm">Translate Info:</Label>
-                   <Select>
+                   <Select disabled>
                      <SelectTrigger id="language-select" className="w-[150px]">
                        <SelectValue placeholder="English" />
                      </SelectTrigger>
                      <SelectContent>
                        <SelectItem value="en">English</SelectItem>
                        <SelectItem value="hi">Hindi</SelectItem>
-                       <SelectItem value="mr">Marathi</SelectItem>
-                       <SelectItem value="ta">Tamil</SelectItem>
-                       <SelectItem value="te">Telugu</SelectItem>
-                       <SelectItem value="bn">Bengali</SelectItem>
-                       <SelectItem value="kn">Kannada</SelectItem>
                      </SelectContent>
                    </Select>
                  </div>
-               </div> */}
+               </div>
+               */}
              </CardFooter>
            )}
         </Card>
       )}
 
+        {/* Reset Button */}
       <Button
         onClick={() => resetState(true)}
         className="bg-primary text-primary-foreground hover:bg-primary/90"
-        disabled={isLoading}
+        disabled={isLoading || isClassifying}
       >
         <RotateCcw className="mr-2 h-4 w-4" />
         Reset
