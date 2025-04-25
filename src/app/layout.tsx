@@ -10,7 +10,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'AgriWaste AI', // Updated App Name
+  title: 'SAATHI - Agricultural Waste Detector', // Updated App Name
   description: 'Detect and classify agricultural waste using AI.', // Updated description
 };
 

@@ -294,7 +294,7 @@ export default function AgriWastePage() {
 
   return (
     <div className="flex flex-col items-center space-y-6 md:space-y-8">
-      <h1 className="text-3xl md:text-4xl font-bold text-center text-primary">AS SAATHI - Agricultural Waste Detector</h1>
+      <h1 className="text-3xl md:text-4xl font-bold text-center text-primary">SAATHI - Agricultural Waste Detector</h1>
 
        {/* Hidden Canvas for Capturing Photo */}
        <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
