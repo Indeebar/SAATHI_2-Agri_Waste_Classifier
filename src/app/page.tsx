@@ -1,16 +1,17 @@
 'use client';
 
 import type { ChangeEvent } from 'react';
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { UploadCloud, Leaf, Pencil, RotateCcw, AlertCircle } from 'lucide-react';
+import { UploadCloud, Leaf, Pencil, RotateCcw, AlertCircle, Loader2, Info } from 'lucide-react'; // Added Info, Loader2
 import Image from 'next/image';
-import { classifyWaste, type ClassifyWasteOutput } from '@/ai/flows/classify-waste'; // Assuming flow path
+import { classifyWaste, type ClassifyWasteOutput } from '@/ai/flows/classify-waste';
+import { getWasteDescription } from '@/ai/flows/get-waste-description'; // Import the new flow
 import { useToast } from '@/hooks/use-toast';
 
 // Define possible waste types for manual correction
@@ -28,11 +29,43 @@ export default function AgriWastePage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageDataUri, setImageDataUri] = useState<string | null>(null);
   const [prediction, setPrediction] = useState<ClassifyWasteOutput | null>(null);
+  const [wasteDescription, setWasteDescription] = useState<string | null>(null); // State for description
+  const [isFetchingDescription, setIsFetchingDescription] = useState(false); // Loading state for description
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCorrecting, setIsCorrecting] = useState(false);
   const [manualSelection, setManualSelection] = useState<string | null>(null);
   const { toast } = useToast();
+
+   // Fetch description when prediction changes
+   useEffect(() => {
+    if (prediction?.wasteType) {
+      fetchDescription(prediction.wasteType);
+    } else {
+      setWasteDescription(null); // Clear description if no prediction
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prediction]); // Dependency on prediction object
+
+  const fetchDescription = useCallback(async (wasteType: string) => {
+    setIsFetchingDescription(true);
+    setWasteDescription(null); // Clear previous description
+    try {
+      const result = await getWasteDescription({ wasteType });
+      setWasteDescription(result.description);
+    } catch (err) {
+      console.error("Description fetching error:", err);
+      setWasteDescription("Could not fetch description."); // Show error message in description area
+      toast({
+        variant: "destructive",
+        title: "Description Error",
+        description: "Failed to fetch waste description.",
+      });
+    } finally {
+      setIsFetchingDescription(false);
+    }
+  }, [toast]);
+
 
   const handleImageUpload = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -50,7 +83,7 @@ export default function AgriWastePage() {
         setError(null);
         try {
           const result = await classifyWaste({ photoDataUri: dataUri });
-          setPrediction(result);
+          setPrediction(result); // This will trigger the useEffect for description fetching
           toast({
             title: "Classification Successful",
             description: `Detected: ${result.wasteType}`,
@@ -93,6 +126,8 @@ export default function AgriWastePage() {
       title: "Manual Selection",
       description: `Selected: ${value}`,
     });
+    // Fetch description for manually selected type
+    // fetchDescription(value); // This is handled by the useEffect now
   };
 
   const resetState = (clearImage: boolean = true) => {
@@ -106,6 +141,8 @@ export default function AgriWastePage() {
        }
     }
     setPrediction(null);
+    setWasteDescription(null); // Clear description
+    setIsFetchingDescription(false); // Reset description loading state
     setError(null);
     setIsLoading(false);
     setIsCorrecting(false);
@@ -140,7 +177,7 @@ export default function AgriWastePage() {
                 style={{ display: 'none' }}
                 disabled={isLoading}
               />
-             {/* "Take a Photo" Button - Triggers file input */}
+             {/* "Upload Photo" Button - Triggers file input */}
             <Button
               variant="outline"
               className="border-2 border-dashed border-primary text-primary hover:bg-accent hover:text-accent-foreground w-full sm:w-auto md:w-full"
@@ -162,7 +199,7 @@ export default function AgriWastePage() {
             {isLoading ? (
               <div className="text-center space-y-2">
                 <p className="text-muted-foreground">Processing...</p>
-                <Progress value={undefined} className="w-3/4 mx-auto animate-pulse" />
+                <Progress value={undefined} className="w-3/4 mx-auto" /> {/* Removed animation, handled by component */}
               </div>
             ) : imagePreview ? (
               <Image
@@ -231,36 +268,51 @@ export default function AgriWastePage() {
               </div>
             ) : null}
           </CardContent>
-          {/* Details Section (Placeholder) */}
-          {/* <CardFooter className="flex flex-col items-start space-y-4 border-t pt-4">
-             <h3 className="text-lg font-semibold">Details</h3>
-             <div className="text-muted-foreground italic">
-               Waste information (fetched from Firestore) will appear here.
-             </div>
-             <div className="flex justify-between w-full items-center">
-               <Button variant="ghost" size="icon" className="text-primary hover:bg-accent">
-                 <Volume2 className="h-5 w-5" />
-                 <span className="sr-only">Read aloud</span>
-               </Button>
-               <div className="flex items-center gap-2">
-                 <Label htmlFor="language-select" className="text-sm">Translate Info:</Label>
-                 <Select>
-                   <SelectTrigger id="language-select" className="w-[150px]">
-                     <SelectValue placeholder="English" />
-                   </SelectTrigger>
-                   <SelectContent>
-                     <SelectItem value="en">English</SelectItem>
-                     <SelectItem value="hi">Hindi</SelectItem>
-                     <SelectItem value="mr">Marathi</SelectItem>
-                     <SelectItem value="ta">Tamil</SelectItem>
-                     <SelectItem value="te">Telugu</SelectItem>
-                     <SelectItem value="bn">Bengali</SelectItem>
-                     <SelectItem value="kn">Kannada</SelectItem>
-                   </SelectContent>
-                 </Select>
+          {/* Details Section */}
+          {prediction && (
+            <CardFooter className="flex flex-col items-start space-y-4 border-t pt-4">
+               <h3 className="text-lg font-semibold flex items-center gap-2">
+                 <Info className="text-primary h-5 w-5" />
+                 Details
+               </h3>
+               <div className="text-muted-foreground w-full min-h-[40px]">
+                 {isFetchingDescription ? (
+                   <div className="flex items-center gap-2">
+                     <Loader2 className="h-4 w-4 animate-spin" />
+                     <span>Fetching description...</span>
+                   </div>
+                 ) : wasteDescription ? (
+                   <p>{wasteDescription}</p>
+                 ) : (
+                   <p className="italic">No description available.</p> // Placeholder if description is null/empty
+                 )}
                </div>
-             </div>
-           </CardFooter> */}
+               {/* Placeholder for Translation and TTS */}
+               {/* <div className="flex justify-between w-full items-center pt-4 border-t mt-4">
+                 <Button variant="ghost" size="icon" className="text-primary hover:bg-accent">
+                   <Volume2 className="h-5 w-5" />
+                   <span className="sr-only">Read aloud</span>
+                 </Button>
+                 <div className="flex items-center gap-2">
+                   <Label htmlFor="language-select" className="text-sm">Translate Info:</Label>
+                   <Select>
+                     <SelectTrigger id="language-select" className="w-[150px]">
+                       <SelectValue placeholder="English" />
+                     </SelectTrigger>
+                     <SelectContent>
+                       <SelectItem value="en">English</SelectItem>
+                       <SelectItem value="hi">Hindi</SelectItem>
+                       <SelectItem value="mr">Marathi</SelectItem>
+                       <SelectItem value="ta">Tamil</SelectItem>
+                       <SelectItem value="te">Telugu</SelectItem>
+                       <SelectItem value="bn">Bengali</SelectItem>
+                       <SelectItem value="kn">Kannada</SelectItem>
+                     </SelectContent>
+                   </Select>
+                 </div>
+               </div> */}
+             </CardFooter>
+           )}
         </Card>
       )}
 
