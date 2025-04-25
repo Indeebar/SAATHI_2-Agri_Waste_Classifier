@@ -68,6 +68,13 @@ interface TranslatedTexts {
     cameraDeniedDialogTitle: string;
     cameraDeniedDialogDesc: string;
     captureButton: string;
+    descriptionErrorRateLimit: string; // New key for rate limit error
+    translationErrorRateLimitTitle: string; // New key for rate limit toast title
+    translationErrorRateLimitDesc: string; // New key for rate limit toast description
+    descriptionErrorGeneric: string; // New key for generic description error
+    descriptionErrorToastTitle: string; // New key for generic description error toast title
+    descriptionErrorToastDesc: string; // New key for generic description error toast desc
+
     // Add more keys as needed
 }
 
@@ -100,6 +107,12 @@ const DEFAULT_TEXTS: TranslatedTexts = {
     cameraDeniedDialogTitle: 'Camera Access Denied',
     cameraDeniedDialogDesc: 'Please allow camera access in your browser settings and refresh the page to use this feature.',
     captureButton: 'Capture Photo',
+    descriptionErrorRateLimit: "Could not fetch description: Rate limit exceeded. Please try again later.", // Rate limit error message
+    translationErrorRateLimitTitle: "Translation Limit Reached",
+    translationErrorRateLimitDesc: "Too many requests. Displaying information in English. Please wait and try changing languages again later.",
+    descriptionErrorGeneric: "Could not fetch description.", // Generic error message
+    descriptionErrorToastTitle: "Description Error",
+    descriptionErrorToastDesc: "Failed to get waste description.",
 };
 
 export default function AgriWastePage() {
@@ -139,8 +152,6 @@ export default function AgriWastePage() {
         console.error(`Translation error for text "${text}" to ${targetLang}:`, err);
         // Re-throw the error to be caught by the caller (translateUI or fetchDescription)
         throw err;
-        // Fallback to original text in case of error - Handled in caller now
-        // return text;
     }
   }, []);
 
@@ -152,10 +163,15 @@ export default function AgriWastePage() {
       }
       setIsTranslating(true);
       const newTranslations: Partial<TranslatedTexts> = {};
-      const delayMs = 400; // Increased delay between API calls (adjust as needed, maybe make it longer)
+      const delayMs = 500; // Increased delay between API calls
 
       try {
           for (const [key, value] of Object.entries(DEFAULT_TEXTS)) {
+              // Skip translating error messages that might be shown directly
+              if (key.startsWith('descriptionError') || key.startsWith('translationError')) {
+                 newTranslations[key as keyof TranslatedTexts] = value; // Keep original error message
+                 continue;
+              }
               const translated = await translateSingleText(value, targetLang);
               newTranslations[key as keyof TranslatedTexts] = translated;
               // Add delay *after* successful translation
@@ -165,147 +181,122 @@ export default function AgriWastePage() {
 
       } catch (err) {
           console.error("UI Translation error:", err);
+          // Revert to default English texts if any translation fails
+          setTranslatedTexts(DEFAULT_TEXTS);
+          setSelectedLanguage('en'); // Force back to English on error
+
           // Check if the error is the QuotaFailure (429)
           if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
-               // Try to translate the error message itself, fallback to English if that also fails
-               let quotaErrorTitle = "Translation Limit Reached";
-               let quotaErrorDesc = "Too many translation requests. Please wait a moment and try again, or switch back to English.";
-               try {
-                 quotaErrorTitle = await translateSingleText(quotaErrorTitle, targetLang);
-                 quotaErrorDesc = await translateSingleText(quotaErrorDesc, targetLang);
-               } catch (translateErr) {
-                 console.error("Failed to translate quota error message:", translateErr);
-               }
-
                toast({
                    variant: "destructive",
-                   title: quotaErrorTitle,
-                   description: quotaErrorDesc,
+                   title: DEFAULT_TEXTS.translationErrorRateLimitTitle, // Use default English text
+                   description: DEFAULT_TEXTS.translationErrorRateLimitDesc, // Use default English text
                    duration: 7000, // Show for longer
                });
           } else {
              // Generic translation error
-             let genericErrorTitle = "Translation Error";
-             let genericErrorDesc = "Could not translate UI elements.";
-             try {
-                genericErrorTitle = await translateSingleText(genericErrorTitle, targetLang);
-                genericErrorDesc = await translateSingleText(genericErrorDesc, targetLang);
-             } catch (translateErr) {
-                console.error("Failed to translate generic error message:", translateErr);
-             }
              toast({
                  variant: "destructive",
-                 title: genericErrorTitle,
-                 description: genericErrorDesc,
+                 title: DEFAULT_TEXTS.errorTitle, // Use default English
+                 description: "Could not translate UI elements.", // Use default English
              });
           }
-          // Revert to default English texts if any translation fails
-          setTranslatedTexts(DEFAULT_TEXTS);
-          setSelectedLanguage('en'); // Force back to English on error
       } finally {
           setIsTranslating(false);
       }
-  }, [translateSingleText, toast]); // Removed selectedLanguage dependency here, it's passed as targetLang
+   }, [translateSingleText, toast]);
 
-   // Fetch description and translate it
-   const fetchDescription = useCallback(async (wasteType: string, targetLang: string) => {
-    setIsFetchingDescription(true);
-    setWasteDescription(null);
-    setOriginalWasteDescription(null);
-    let description = '';
-    let currentLang = targetLang; // Use targetLang initially
 
-    try {
-      const result = await getWasteDescription({ wasteType });
-      description = result.description;
-      setOriginalWasteDescription(description); // Store original English
+  // Fetch description and translate it
+  const fetchDescription = useCallback(async (wasteType: string, targetLang: string) => {
+      setIsFetchingDescription(true);
+      setWasteDescription(null);
+      setOriginalWasteDescription(null); // Clear previous original description
+      let description = '';
+      let currentLang = targetLang;
 
-      // Translate the description if needed
-      if (currentLang !== 'en') {
-          description = await translateSingleText(description, currentLang);
+      try {
+          // Step 1: Always fetch the description in English first
+          const result = await getWasteDescription({ wasteType });
+          description = result.description;
+          setOriginalWasteDescription(description); // Store original English
+
+          // Step 2: Translate if the target language is not English
+          if (currentLang !== 'en') {
+              description = await translateSingleText(description, currentLang);
+          }
+          setWasteDescription(description); // Set the final (potentially translated) description
+
+      } catch (err) {
+          console.error("Description fetching/translation error:", err);
+          setOriginalWasteDescription(null); // Ensure original is null on error
+          let errorMsgKey: keyof TranslatedTexts = 'descriptionErrorGeneric'; // Default to generic error
+          let toastTitleKey: keyof TranslatedTexts = 'descriptionErrorToastTitle';
+          let toastDescKey: keyof TranslatedTexts = 'descriptionErrorToastDesc';
+
+          // Check if it's a rate limit error (429) - applies to both fetching and translation steps
+          if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
+              errorMsgKey = 'descriptionErrorRateLimit'; // Specific message for rate limit
+              toastTitleKey = 'translationErrorRateLimitTitle'; // Use the rate limit toast title
+              toastDescKey = 'translationErrorRateLimitDesc'; // Use the rate limit toast desc
+
+              // If rate limit hit during translation, revert language and display original English description
+              if (originalWasteDescription && currentLang !== 'en') {
+                   setWasteDescription(originalWasteDescription); // Show English fallback description
+                   setSelectedLanguage('en'); // Revert language selector to English
+                   currentLang = 'en';
+              } else {
+                  // If rate limit hit during the initial fetch (getWasteDescription)
+                   setWasteDescription(DEFAULT_TEXTS[errorMsgKey]); // Show the rate limit error message
+              }
+
+              toast({
+                  variant: "destructive",
+                  title: DEFAULT_TEXTS[toastTitleKey], // Show English rate limit title
+                  description: DEFAULT_TEXTS[toastDescKey], // Show English rate limit description
+                  duration: 7000,
+              });
+
+          } else {
+                // Other generic error (fetching or translation)
+               setWasteDescription(DEFAULT_TEXTS[errorMsgKey]); // Show generic error message
+
+               toast({
+                 variant: "destructive",
+                 title: DEFAULT_TEXTS[toastTitleKey], // Show English generic error title
+                 description: DEFAULT_TEXTS[toastDescKey], // Show English generic error description
+               });
+          }
+
+      } finally {
+          setIsFetchingDescription(false);
       }
-      setWasteDescription(description);
-
-    } catch (err) {
-      console.error("Description fetching/translation error:", err);
-      let errorMsg = "Could not fetch or translate description.";
-
-      // Handle potential quota errors during description translation
-      if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
-          errorMsg = "Translation limit reached while getting description. Displaying in English.";
-          setWasteDescription(originalWasteDescription); // Fallback to original English description
-          currentLang = 'en'; // Revert language state if quota hit during description translation
-          setSelectedLanguage('en'); // Update the global language state
-
-          let quotaErrorTitle = "Translation Limit Reached";
-           let quotaErrorDesc = "Displaying description in English due to translation limits.";
-           try {
-             quotaErrorTitle = await translateSingleText(quotaErrorTitle, targetLang); // Try translating error with original targetLang
-             quotaErrorDesc = await translateSingleText(quotaErrorDesc, targetLang);
-           } catch { /* Ignore errors translating the error message */ }
-
-           toast({
-               variant: "destructive",
-               title: quotaErrorTitle,
-               description: quotaErrorDesc,
-               duration: 7000,
-           });
-
-      } else {
-        // Other error (fetching or generic translation)
-        try {
-             // Try to translate the generic error message
-             errorMsg = await translateSingleText(errorMsg, currentLang);
-         } catch (translateErr) {
-             console.error("Failed to translate description error message:", translateErr);
-             // If translating the error fails, use the English default
-             errorMsg = "Could not fetch or translate description.";
-         }
-         setWasteDescription(errorMsg); // Show translated (or default English) error
-
-         let descErrorTitle = "Description Error";
-         let descErrorDesc = "Failed to get waste description.";
-         try {
-           descErrorTitle = await translateSingleText(descErrorTitle, currentLang);
-           descErrorDesc = await translateSingleText(descErrorDesc, currentLang);
-         } catch {} // Ignore errors translating the toast message
-
-         toast({
-           variant: "destructive",
-           title: descErrorTitle,
-           description: descErrorDesc,
-         });
-      }
+  }, [toast, translateSingleText]); // Removed originalWasteDescription, setSelectedLanguage dependencies
 
 
-    } finally {
-      setIsFetchingDescription(false);
-    }
-  }, [toast, translateSingleText, originalWasteDescription]); // Added originalWasteDescription dependency
+   // Effect to fetch description when prediction changes OR manual correction occurs
+   useEffect(() => {
+       const currentPredictionType = manualSelection ?? prediction?.wasteType;
+       if (currentPredictionType) {
+           fetchDescription(currentPredictionType, selectedLanguage); // Fetch (and potentially translate) new description
+       } else {
+           setWasteDescription(null);
+           setOriginalWasteDescription(null);
+       }
+       // Cleanup speech synthesis if prediction/manual selection changes
+       window.speechSynthesis?.cancel();
+       setIsSpeaking(false);
+   }, [prediction, manualSelection, fetchDescription, selectedLanguage]); // Keep selectedLanguage here
 
-
-  // Effect to fetch description when prediction changes OR language changes
-  useEffect(() => {
-    const currentPredictionType = manualSelection ?? prediction?.wasteType;
-    if (currentPredictionType) {
-        fetchDescription(currentPredictionType, selectedLanguage);
-    } else {
-        setWasteDescription(null);
-        setOriginalWasteDescription(null);
-    }
-    // Cleanup speech synthesis if prediction/language changes
-    window.speechSynthesis?.cancel();
-    setIsSpeaking(false);
-  }, [prediction, manualSelection, selectedLanguage, fetchDescription]); // Add selectedLanguage and manualSelection
-
-  // Effect to translate UI when language changes
-  useEffect(() => {
-      translateUI(selectedLanguage);
-  }, [selectedLanguage, translateUI]);
+   // Effect to translate UI when language changes
+   useEffect(() => {
+       translateUI(selectedLanguage);
+   }, [selectedLanguage, translateUI]);
 
   // Effect to translate existing description when language changes
    useEffect(() => {
         const translateExistingDescription = async () => {
+             // Only proceed if we have an original English description and the target language is not English
             if (originalWasteDescription && selectedLanguage !== 'en') {
                 setIsFetchingDescription(true); // Show loading while translating description
                 try {
@@ -313,55 +304,42 @@ export default function AgriWastePage() {
                     setWasteDescription(translatedDesc);
                 } catch (err) {
                      console.error("Error translating existing description:", err);
-                    // Handle quota errors specifically when changing language
+                     setWasteDescription(originalWasteDescription); // Fallback to original English
+                     setSelectedLanguage('en'); // Revert language state
+
+                     // Handle quota errors specifically when changing language
                     if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
-                         setWasteDescription(originalWasteDescription); // Fallback to original English
-                         setSelectedLanguage('en'); // Revert language state
-
-                         let quotaErrorTitle = "Translation Limit Reached";
-                         let quotaErrorDesc = "Displaying description in English due to translation limits.";
-                          try {
-                            // Try translating the toast message using the *previous* language if possible, else english
-                            const previousLang = LANGUAGES.find(l => l.code !== 'en')?.code || 'en';
-                            quotaErrorTitle = await translateSingleText(quotaErrorTitle, previousLang);
-                            quotaErrorDesc = await translateSingleText(quotaErrorDesc, previousLang);
-                          } catch {}
-
                          toast({
                              variant: "destructive",
-                             title: quotaErrorTitle,
-                             description: quotaErrorDesc,
+                             title: DEFAULT_TEXTS.translationErrorRateLimitTitle, // Use default English text
+                             description: DEFAULT_TEXTS.translationErrorRateLimitDesc, // Use default English text
                              duration: 7000,
                          });
                     } else {
                         // Generic error translating description
-                         setWasteDescription(originalWasteDescription); // Fallback to English on other errors too
-                         let genericErrorTitle = "Translation Error";
-                         let genericErrorDesc = "Could not translate description. Displaying in English.";
-                          try {
-                             const previousLang = LANGUAGES.find(l => l.code !== 'en')?.code || 'en';
-                             genericErrorTitle = await translateSingleText(genericErrorTitle, previousLang);
-                             genericErrorDesc = await translateSingleText(genericErrorDesc, previousLang);
-                          } catch {}
-                          toast({
+                         toast({
                              variant: "destructive",
-                             title: genericErrorTitle,
-                             description: genericErrorDesc,
+                             title: DEFAULT_TEXTS.errorTitle, // Generic error title
+                             description: "Could not translate description. Displaying in English.", // Generic fallback message
                          });
                     }
                 } finally {
                      setIsFetchingDescription(false);
                 }
-
             } else if (originalWasteDescription && selectedLanguage === 'en') {
-                setWasteDescription(originalWasteDescription); // Revert to original English
+                 // If language changed back to English, just show the original
+                setWasteDescription(originalWasteDescription);
             }
         };
-        // Only run if the language actually changed AND there's an original description
+
+        // Only run if there's an original description to translate/revert
         if (originalWasteDescription) {
              translateExistingDescription();
         }
-   }, [selectedLanguage, originalWasteDescription, translateSingleText, toast]);
+        // Cleanup speech synthesis when language changes
+         window.speechSynthesis?.cancel();
+         setIsSpeaking(false);
+   }, [selectedLanguage, originalWasteDescription, translateSingleText, toast]); // Removed `translateUI` dep
 
 
   const processImage = useCallback(async (dataUri: string) => {
@@ -377,28 +355,35 @@ export default function AgriWastePage() {
 
     try {
       const result = await classifyWaste({ photoDataUri: dataUri });
-      setPrediction(result); // This will trigger the useEffect for description fetching in the selected language
-      let successMsg = "Classification Successful";
+      setPrediction(result); // This will trigger the useEffect for description fetching
+      // Toast notification for success - translate cautiously
+      let successMsg = DEFAULT_TEXTS.title; // Re-use app title or a simple "Success"
       let detectedMsg = `Detected: ${result.wasteType}`;
-      try {
-          successMsg = await translateSingleText(successMsg, currentLang);
-          detectedMsg = await translateSingleText(detectedMsg, currentLang);
-      } catch (err) {
-           console.error("Error translating success toast:", err);
-           // If translation fails (e.g., quota), show in English and maybe revert lang
-           if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
-               successMsg = "Classification Successful"; // English fallback
-               detectedMsg = `Detected: ${result.wasteType}`; // English fallback
-               setSelectedLanguage('en'); // Revert language
-               currentLang = 'en';
-               toast({
-                   variant: "destructive",
-                   title: "Translation Limit Reached",
-                   description: "Displaying results in English.",
-                   duration: 7000,
-               });
-           }
-      }
+       try {
+          // Only translate if not English
+          if (currentLang !== 'en') {
+             successMsg = await translateSingleText(DEFAULT_TEXTS.title, currentLang); // Translate app title
+             detectedMsg = await translateSingleText(`Detected: ${result.wasteType}`, currentLang);
+          }
+       } catch (err) {
+          console.error("Error translating success toast:", err);
+          // Handle quota errors specifically
+          if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
+             successMsg = DEFAULT_TEXTS.title; // Fallback to English title
+             detectedMsg = `Detected: ${result.wasteType}`; // Fallback to English message
+             setSelectedLanguage('en'); // Revert language
+             currentLang = 'en';
+             toast({
+                 variant: "destructive",
+                 title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                 description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
+                 duration: 7000,
+             });
+          }
+          // For other translation errors, just show English
+          successMsg = DEFAULT_TEXTS.title;
+          detectedMsg = `Detected: ${result.wasteType}`;
+       }
       toast({
         title: successMsg,
         description: detectedMsg,
@@ -410,44 +395,40 @@ export default function AgriWastePage() {
        if (err instanceof Error) {
            errorMessage = err.message;
        }
+      // Set the main error display (untranslated)
+      setError(`${errorPrefix} ${errorMessage}`);
+      setPrediction(null);
+      // Show a generic failure toast (attempt translation, fallback to English)
+      let failTitle = "Classification Failed";
        try {
-           errorPrefix = await translateSingleText(errorPrefix, currentLang);
-           // Avoid translating raw error messages from APIs
-           if (errorMessage === 'An unknown error occurred during classification.') {
-               errorMessage = await translateSingleText(errorMessage, currentLang);
-           }
-       } catch (translateErr) {
-           console.error("Error translating classification error:", translateErr);
-           // Fallback to English if error translation fails
-           errorPrefix = "Classification failed:";
-           errorMessage = err instanceof Error ? err.message : 'An unknown error occurred during classification.';
-            if (translateErr instanceof Error && (translateErr.message.includes('429') || translateErr.message.includes('QuotaFailure'))) {
-               setSelectedLanguage('en'); // Revert lang on quota error
+          if (currentLang !== 'en') {
+             failTitle = await translateSingleText(failTitle, currentLang);
+          }
+       } catch(err) {
+          console.error("Error translating failure toast title:", err);
+          failTitle = "Classification Failed"; // Fallback
+          // Handle quota error during translation attempt
+           if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
+               setSelectedLanguage('en');
                currentLang = 'en';
                toast({
                    variant: "destructive",
-                   title: "Translation Limit Reached",
-                   description: "Displaying error in English.",
+                   title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                   description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                    duration: 7000,
                });
            }
        }
-      setError(`${errorPrefix} ${errorMessage}`);
-      setPrediction(null);
-      let failTitle = "Classification Failed";
-      try {
-        failTitle = await translateSingleText(failTitle, currentLang);
-      } catch {} // Ignore failure translating toast title
       toast({
         variant: "destructive",
         title: failTitle,
-        description: errorMessage, // Show potentially untranslated detailed error
+        description: errorMessage, // Show raw (untranslated) error message in toast description
       });
     } finally {
       setIsClassifying(false);
       setIsLoading(false);
     }
-  }, [toast, selectedLanguage, translateSingleText]);
+  }, [toast, selectedLanguage, translateSingleText]); // Removed setSelectedLanguage dependency
 
   const handleImageUpload = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -460,34 +441,34 @@ export default function AgriWastePage() {
         const dataUri = reader.result as string;
         setImagePreview(URL.createObjectURL(file));
         setImageDataUri(dataUri);
-        processImage(dataUri);
+        await processImage(dataUri); // Changed order: process after setting preview/dataUri
       };
       reader.onerror = async () => {
-        let errorMsg = "Failed to read the file.";
-        let errorTitle = "Error Reading File";
-        let errorDesc = "Could not read the selected image file.";
+        let errorMsg = "Failed to read the file."; // English default
+        let errorTitle = "Error Reading File"; // English default
+        let errorDesc = "Could not read the selected image file."; // English default
         try {
-             errorMsg = await translateSingleText(errorMsg, currentLang);
-             errorTitle = await translateSingleText(errorTitle, currentLang);
-             errorDesc = await translateSingleText(errorDesc, currentLang);
+             if(currentLang !== 'en') {
+                 errorTitle = await translateSingleText(errorTitle, currentLang);
+                 errorDesc = await translateSingleText(errorDesc, currentLang);
+             }
         } catch (err) {
             console.error("Error translating file read error:", err);
-             // Fallback and potentially revert language on quota error
-             errorMsg = "Failed to read the file.";
-             errorTitle = "Error Reading File";
-             errorDesc = "Could not read the selected image file.";
+             errorTitle = "Error Reading File"; // Fallback
+             errorDesc = "Could not read the selected image file."; // Fallback
+             // Handle quota error during translation attempt
             if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
                setSelectedLanguage('en'); // Revert lang on quota error
                currentLang = 'en';
                toast({
                    variant: "destructive",
-                   title: "Translation Limit Reached",
-                   description: "Displaying error in English.",
+                   title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                   description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                    duration: 7000,
                });
            }
         }
-        setError(errorMsg);
+        setError(errorMsg); // Keep internal error message untranslated
         setImagePreview(null);
         setImageDataUri(null);
         setIsLoading(false);
@@ -500,28 +481,30 @@ export default function AgriWastePage() {
       };
       reader.readAsDataURL(file);
     }
-  }, [toast, processImage, selectedLanguage, translateSingleText]);
+  }, [toast, processImage, selectedLanguage, translateSingleText]); // Removed setSelectedLanguage dependency
 
   const handleManualSelect = async (value: string) => {
     setManualSelection(value);
-    // No need to set prediction here, useEffect handles description fetching based on manualSelection
+    // useEffect handles description fetching based on manualSelection change
     setIsCorrecting(false);
     let manualTitle = "Manual Selection";
     let selectedDesc = `Selected: ${value}`;
     try {
-        manualTitle = await translateSingleText(manualTitle, selectedLanguage);
-        selectedDesc = await translateSingleText(selectedDesc, selectedLanguage);
+        if(selectedLanguage !== 'en') {
+            manualTitle = await translateSingleText(manualTitle, selectedLanguage);
+            selectedDesc = await translateSingleText(selectedDesc, selectedLanguage);
+        }
     } catch (err) {
         console.error("Error translating manual selection toast:", err);
-         // Fallback and potentially revert language on quota error
-         manualTitle = "Manual Selection";
-         selectedDesc = `Selected: ${value}`;
+         manualTitle = "Manual Selection"; // Fallback
+         selectedDesc = `Selected: ${value}`; // Fallback
+         // Handle quota error during translation attempt
         if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
            setSelectedLanguage('en'); // Revert lang on quota error
            toast({
                variant: "destructive",
-               title: "Translation Limit Reached",
-               description: "Displaying selection info in English.",
+               title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+               description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                duration: 7000,
            });
        }
@@ -531,7 +514,6 @@ export default function AgriWastePage() {
       title: manualTitle,
       description: selectedDesc,
     });
-    // fetchDescription(value, selectedLanguage); // Fetch description for manually selected type (Handled by useEffect)
   };
 
   const resetState = (clearImage: boolean = true) => {
@@ -570,19 +552,21 @@ export default function AgriWastePage() {
 
     if (hasCameraPermission === false) {
         try {
-            title = await translateSingleText(title, selectedLanguage);
-            desc = await translateSingleText(desc, selectedLanguage);
+            if(selectedLanguage !== 'en') {
+                title = await translateSingleText(title, selectedLanguage);
+                desc = await translateSingleText(desc, selectedLanguage);
+            }
         } catch (err) {
             console.error("Error translating camera denied toast:", err);
-             // Fallback and potentially revert language on quota error
-             title = 'Camera Access Previously Denied';
-             desc = 'Please enable camera permissions in your browser settings and refresh the page.';
+             title = 'Camera Access Previously Denied'; // Fallback
+             desc = 'Please enable camera permissions in your browser settings and refresh the page.'; // Fallback
+             // Handle quota error during translation attempt
              if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
                  setSelectedLanguage('en'); // Revert lang on quota error
                  toast({
                      variant: "destructive",
-                     title: "Translation Limit Reached",
-                     description: "Displaying message in English.",
+                     title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                     description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                      duration: 7000,
                  });
              }
@@ -610,19 +594,21 @@ export default function AgriWastePage() {
         let deniedTitle = 'Camera Access Denied';
         let deniedDesc = 'Please enable camera permissions in your browser settings to use this feature.';
          try {
-            deniedTitle = await translateSingleText(deniedTitle, selectedLanguage);
-            deniedDesc = await translateSingleText(deniedDesc, selectedLanguage);
+             if(selectedLanguage !== 'en') {
+                deniedTitle = await translateSingleText(deniedTitle, selectedLanguage);
+                deniedDesc = await translateSingleText(deniedDesc, selectedLanguage);
+             }
         } catch (err) {
             console.error("Error translating camera denied toast (catch block):", err);
-             // Fallback and potentially revert language on quota error
-             deniedTitle = 'Camera Access Denied';
-             deniedDesc = 'Please enable camera permissions in your browser settings to use this feature.';
+             deniedTitle = 'Camera Access Denied'; // Fallback
+             deniedDesc = 'Please enable camera permissions in your browser settings to use this feature.'; // Fallback
+              // Handle quota error during translation attempt
              if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
                  setSelectedLanguage('en'); // Revert lang on quota error
                  toast({
                      variant: "destructive",
-                     title: "Translation Limit Reached",
-                     description: "Displaying message in English.",
+                     title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                     description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                      duration: 7000,
                  });
              }
@@ -661,31 +647,30 @@ export default function AgriWastePage() {
         setShowCameraView(false); // Close dialog before processing
         await processImage(dataUri); // Process after closing dialog
       } else {
-         let errorMsg = "Could not get canvas context to capture photo.";
          let errorTitle = "Capture Error";
          let errorDesc = "Failed to get canvas context.";
           try {
-             errorMsg = await translateSingleText(errorMsg, currentLang);
-             errorTitle = await translateSingleText(errorTitle, currentLang);
-             errorDesc = await translateSingleText(errorDesc, currentLang);
+             if(currentLang !== 'en'){
+                 errorTitle = await translateSingleText(errorTitle, currentLang);
+                 errorDesc = await translateSingleText(errorDesc, currentLang);
+             }
           } catch(err) {
              console.error("Error translating canvas context error:", err);
-             // Fallback and potentially revert language on quota error
-             errorMsg = "Could not get canvas context to capture photo.";
-             errorTitle = "Capture Error";
-             errorDesc = "Failed to get canvas context.";
+              errorTitle = "Capture Error"; // Fallback
+              errorDesc = "Failed to get canvas context."; // Fallback
+              // Handle quota error during translation attempt
              if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
                  setSelectedLanguage('en'); // Revert lang on quota error
                  currentLang = 'en';
                  toast({
                      variant: "destructive",
-                     title: "Translation Limit Reached",
-                     description: "Displaying error in English.",
+                     title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                     description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                      duration: 7000,
                  });
              }
           }
-         setError(errorMsg);
+         setError("Could not get canvas context to capture photo."); // Keep internal error untranslated
           toast({
             variant: "destructive",
             title: errorTitle,
@@ -694,31 +679,30 @@ export default function AgriWastePage() {
          setShowCameraView(false); // Close dialog on error too
       }
     } else {
-       let errorMsg = "Camera or canvas element not ready.";
        let errorTitle = "Capture Error";
        let errorDesc = "Camera or canvas not available.";
          try {
-             errorMsg = await translateSingleText(errorMsg, currentLang);
-             errorTitle = await translateSingleText(errorTitle, currentLang);
-             errorDesc = await translateSingleText(errorDesc, currentLang);
+             if(currentLang !== 'en'){
+                 errorTitle = await translateSingleText(errorTitle, currentLang);
+                 errorDesc = await translateSingleText(errorDesc, currentLang);
+             }
          } catch(err) {
              console.error("Error translating camera/canvas ready error:", err);
-              // Fallback and potentially revert language on quota error
-              errorMsg = "Camera or canvas element not ready.";
-              errorTitle = "Capture Error";
-              errorDesc = "Camera or canvas not available.";
+              errorTitle = "Capture Error"; // Fallback
+              errorDesc = "Camera or canvas not available."; // Fallback
+               // Handle quota error during translation attempt
              if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
                  setSelectedLanguage('en'); // Revert lang on quota error
                  currentLang = 'en';
                  toast({
                      variant: "destructive",
-                     title: "Translation Limit Reached",
-                     description: "Displaying error in English.",
+                     title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                     description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                      duration: 7000,
                  });
              }
          }
-       setError(errorMsg);
+       setError("Camera or canvas element not ready."); // Keep internal error untranslated
         toast({
             variant: "destructive",
             title: errorTitle,
@@ -726,7 +710,7 @@ export default function AgriWastePage() {
         });
        setShowCameraView(false); // Close dialog on error too
     }
-  }, [processImage, toast, selectedLanguage, translateSingleText]);
+  }, [processImage, toast, selectedLanguage, translateSingleText]); // Removed setSelectedLanguage dependency
 
   // Effect to stop camera stream
   useEffect(() => {
@@ -780,20 +764,22 @@ export default function AgriWastePage() {
 
     if (!wasteDescription || typeof window === 'undefined' || !window.speechSynthesis) {
       try {
-        title = await translateSingleText(title, currentLang);
-        desc = await translateSingleText(desc, currentLang);
+         if(currentLang !== 'en'){
+            title = await translateSingleText(title, currentLang);
+            desc = await translateSingleText(desc, currentLang);
+         }
       } catch(err) {
          console.error("Error translating TTS unavailable toast:", err);
-         // Fallback and potentially revert language on quota error
-         title = "Speech Error";
-         desc = "Text-to-speech is not available or no description to read.";
+          title = "Speech Error"; // Fallback
+          desc = "Text-to-speech is not available or no description to read."; // Fallback
+          // Handle quota error during translation attempt
          if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
              setSelectedLanguage('en'); // Revert lang on quota error
              currentLang = 'en';
              toast({
                  variant: "destructive",
-                 title: "Translation Limit Reached",
-                 description: "Displaying message in English.",
+                 title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                 description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                  duration: 7000,
              });
          }
@@ -821,22 +807,24 @@ export default function AgriWastePage() {
         console.error("Speech synthesis error:", event.error);
         setIsSpeaking(false);
         let errorTitle = "Speech Error";
-        let errorDesc = `Could not read aloud: ${event.error}`;
+        let errorDesc = `Could not read aloud: ${event.error}`; // Untranslated default
         try {
-            errorTitle = await translateSingleText(errorTitle, currentLang);
-            errorDesc = await translateSingleText(`Could not read aloud`, currentLang) + `: ${event.error}`;
+            if(currentLang !== 'en'){
+                errorTitle = await translateSingleText("Speech Error", currentLang);
+                errorDesc = await translateSingleText(`Could not read aloud`, currentLang) + `: ${event.error}`;
+            }
         } catch (err) {
              console.error("Error translating TTS error toast:", err);
-             // Fallback and potentially revert language on quota error
-             errorTitle = "Speech Error";
-             errorDesc = `Could not read aloud: ${event.error}`;
+             errorTitle = "Speech Error"; // Fallback
+             errorDesc = `Could not read aloud: ${event.error}`; // Fallback
+              // Handle quota error during translation attempt
              if (err instanceof Error && (err.message.includes('429') || err.message.includes('QuotaFailure'))) {
                  setSelectedLanguage('en'); // Revert lang on quota error
                  currentLang = 'en';
                  toast({
                      variant: "destructive",
-                     title: "Translation Limit Reached",
-                     description: "Displaying error in English.",
+                     title: DEFAULT_TEXTS.translationErrorRateLimitTitle,
+                     description: DEFAULT_TEXTS.translationErrorRateLimitDesc,
                      duration: 7000,
                  });
              }
@@ -850,10 +838,15 @@ export default function AgriWastePage() {
       utteranceRef.current = utterance;
       window.speechSynthesis.speak(utterance);
     }
-  }, [wasteDescription, isSpeaking, toast, selectedLanguage, translateSingleText]);
+  }, [wasteDescription, isSpeaking, toast, selectedLanguage, translateSingleText]); // Removed setSelectedLanguage dependency
 
   // Get current language name for the dropdown display
   const currentLanguageName = LANGUAGES.find(l => l.code === selectedLanguage)?.name || 'Language';
+
+  // Determine the actual description text to display
+  const displayDescription = isFetchingDescription
+      ? translatedTexts.fetchingDescription
+      : wasteDescription ?? translatedTexts.noDescription;
 
   return (
     <div className="flex flex-col items-center space-y-6 md:space-y-8">
@@ -984,7 +977,7 @@ export default function AgriWastePage() {
          <Alert variant="destructive" className="w-full max-w-3xl shadow-md">
            <AlertCircle className="h-4 w-4" />
            <AlertTitle>{isTranslating ? '...' : translatedTexts.errorTitle}</AlertTitle>
-           <AlertDescription>{error}</AlertDescription> {/* Error message itself is potentially already translated */}
+           <AlertDescription>{error}</AlertDescription> {/* Error message itself is untranslated */}
          </Alert>
       )}
 
@@ -1017,7 +1010,7 @@ export default function AgriWastePage() {
                   </div>
                </div>
             ) : (prediction || manualSelection) ? ( // Show details if prediction exists OR manual selection done
-              <div className={`space-y-2 border-l-4 p-4 rounded ${prediction ? getConfidenceColor(prediction.confidence) : 'border-primary'} bg-card`}>
+              <div className={`space-y-2 border-l-4 p-4 rounded ${prediction && !manualSelection ? getConfidenceColor(prediction.confidence) : 'border-primary'} bg-card`}>
                 <p className="text-sm text-muted-foreground">{isTranslating ? '...' : translatedTexts.detectedTypeLabel}</p>
                 <p className="text-3xl font-semibold">{manualSelection ?? prediction?.wasteType}</p>
                 {prediction && !manualSelection && ( // Only show confidence if it's a prediction, not manual override
@@ -1025,7 +1018,7 @@ export default function AgriWastePage() {
                         {isTranslating ? '...' : translatedTexts.confidenceLabel} {(prediction.confidence * 100).toFixed(1)}%
                     </p>
                  )}
-                 {!manualSelection && ( // Only show correction link if not manually selected
+                 {!manualSelection && prediction && ( // Only show correction link if not manually selected and prediction exists
                       <Button
                           variant="link"
                           className="p-0 h-auto text-sm text-primary hover:underline"
@@ -1043,7 +1036,7 @@ export default function AgriWastePage() {
             ) : null}
           </CardContent>
 
-          {/* Details Section - Show if NOT correcting and prediction/manual selection exists */}
+          {/* Details Section - Show if NOT correcting and (prediction or manual selection) exists */}
           {(prediction || manualSelection) && !isCorrecting && (
             <CardFooter className="flex flex-col items-start space-y-4 border-t pt-4">
               <div className="flex items-center justify-between w-full">
@@ -1055,7 +1048,8 @@ export default function AgriWastePage() {
                     variant="ghost"
                     size="icon"
                     onClick={handleReadAloud}
-                    disabled={isFetchingDescription || !wasteDescription || isLoading || isTranslating || isSpeaking} // Also disable while speaking
+                    // Disable TTS if fetching, loading, translating, already speaking, or if description is an error message or placeholder
+                    disabled={isFetchingDescription || isLoading || isTranslating || isSpeaking || !wasteDescription || wasteDescription === translatedTexts.noDescription || Object.values(DEFAULT_TEXTS).includes(wasteDescription)}
                     className="text-primary hover:bg-accent disabled:opacity-50"
                     aria-label={isSpeaking ? (isTranslating ? '...' : translatedTexts.stopReadingButtonLabel) : (isTranslating ? '...' : translatedTexts.readAloudButtonLabel)}
                   >
@@ -1064,15 +1058,17 @@ export default function AgriWastePage() {
               </div>
 
                <div className="text-muted-foreground w-full min-h-[40px]">
-                 {isFetchingDescription || (isTranslating && !wasteDescription) ? ( // Show loader if fetching OR translating UI *and* no description yet
+                 {isFetchingDescription ? (
                    <div className="flex items-center gap-2">
                      <Loader2 className="h-4 w-4 animate-spin" />
-                     <span>{isTranslating ? '...' : translatedTexts.fetchingDescription}</span>
+                     <span>{translatedTexts.fetchingDescription}</span>
                    </div>
-                 ) : wasteDescription ? (
-                   <p>{wasteDescription}</p>
                  ) : (
-                   <p className="italic">{isTranslating ? '...' : translatedTexts.noDescription}</p>
+                    // Use displayDescription which handles loading, fetched description, or 'no description' placeholder
+                    // Check if the description is one of the default error messages
+                    (wasteDescription === DEFAULT_TEXTS.descriptionErrorRateLimit || wasteDescription === DEFAULT_TEXTS.descriptionErrorGeneric || wasteDescription === DEFAULT_TEXTS.noDescription)
+                     ? <p className="italic">{wasteDescription}</p> // Show error/no description italicized
+                     : <p>{wasteDescription}</p> // Show the actual description
                  )}
                </div>
              </CardFooter>
