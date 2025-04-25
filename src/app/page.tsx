@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"; // Added Dialog components
-import { UploadCloud, Leaf, Pencil, RotateCcw, AlertCircle, Loader2, Info, Camera, VideoOff } from 'lucide-react'; // Added Camera, VideoOff
+import { UploadCloud, Leaf, Pencil, RotateCcw, AlertCircle, Loader2, Info, Camera, VideoOff, Volume2, StopCircle } from 'lucide-react'; // Added Camera, VideoOff, Volume2, StopCircle
 import Image from 'next/image';
 import { classifyWaste, type ClassifyWasteOutput } from '@/ai/flows/classify-waste';
 import { getWasteDescription } from '@/ai/flows/get-waste-description'; // Import the new flow
@@ -40,9 +40,11 @@ export default function AgriWastePage() {
   const [manualSelection, setManualSelection] = useState<string | null>(null);
   const [showCameraView, setShowCameraView] = useState(false);
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false); // State for TTS
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null); // Ref for canvas element
   const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null); // Ref for utterance
   const { toast } = useToast();
 
    // Fetch description when prediction changes
@@ -52,6 +54,9 @@ export default function AgriWastePage() {
     } else {
       setWasteDescription(null); // Clear description if no prediction or correcting
     }
+    // Cleanup speech synthesis if prediction changes or correcting starts
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prediction, isCorrecting]); // Dependency on prediction object and correction state
 
@@ -161,6 +166,9 @@ export default function AgriWastePage() {
     setIsClassifying(false);
     setIsCorrecting(false);
     setManualSelection(null);
+    // Stop TTS on reset
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
   };
 
   const getConfidenceColor = (confidence: number): string => {
@@ -262,6 +270,8 @@ export default function AgriWastePage() {
         streamRef.current = null;
         console.log("Camera stream stopped.");
       }
+      // Cleanup speech synthesis on unmount
+      window.speechSynthesis?.cancel();
     };
   }, []);
 
@@ -290,6 +300,42 @@ export default function AgriWastePage() {
       }
     }
   }, [showCameraView]);
+
+  // ---- Text-to-Speech Functionality ----
+  const handleReadAloud = useCallback(() => {
+    if (!wasteDescription || typeof window === 'undefined' || !window.speechSynthesis) {
+      toast({
+        variant: "destructive",
+        title: "Speech Error",
+        description: "Text-to-speech is not available or no description to read.",
+      });
+      return;
+    }
+
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    } else {
+      // Cancel any previous speech before starting new one
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(wasteDescription);
+      utterance.lang = 'en-US'; // Default to English
+      utterance.onstart = () => setIsSpeaking(true);
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = (event) => {
+        console.error("Speech synthesis error:", event.error);
+        setIsSpeaking(false);
+        toast({
+          variant: "destructive",
+          title: "Speech Error",
+          description: `Could not read aloud: ${event.error}`,
+        });
+      };
+      utteranceRef.current = utterance; // Store utterance if needed for future controls
+      window.speechSynthesis.speak(utterance);
+    }
+  }, [wasteDescription, isSpeaking, toast]);
 
 
   return (
@@ -467,10 +513,23 @@ export default function AgriWastePage() {
           {/* Details Section - only show if NOT correcting and prediction exists */}
           {prediction && !isCorrecting && (
             <CardFooter className="flex flex-col items-start space-y-4 border-t pt-4">
-               <h3 className="text-lg font-semibold flex items-center gap-2">
-                 <Info className="text-primary h-5 w-5" />
-                 Details
-               </h3>
+              <div className="flex items-center justify-between w-full">
+                 <h3 className="text-lg font-semibold flex items-center gap-2">
+                   <Info className="text-primary h-5 w-5" />
+                   Details
+                 </h3>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={handleReadAloud}
+                    disabled={isFetchingDescription || !wasteDescription || isLoading}
+                    className="text-primary hover:bg-accent disabled:opacity-50"
+                    aria-label={isSpeaking ? "Stop reading" : "Read description aloud"}
+                  >
+                    {isSpeaking ? <StopCircle className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+                  </Button>
+              </div>
+
                <div className="text-muted-foreground w-full min-h-[40px]">
                  {isFetchingDescription ? (
                    <div className="flex items-center gap-2">
@@ -483,13 +542,9 @@ export default function AgriWastePage() {
                    <p className="italic">No description available.</p>
                  )}
                </div>
-               {/* Placeholder for Translation and TTS (Future Feature) */}
+               {/* Placeholder for Translation (Future Feature) */}
                {/*
-               <div className="flex justify-between w-full items-center pt-4 border-t mt-4 opacity-50">
-                 <Button variant="ghost" size="icon" className="text-primary hover:bg-accent" disabled>
-                   <Volume2 className="h-5 w-5" />
-                   <span className="sr-only">Read aloud</span>
-                 </Button>
+               <div className="flex justify-end w-full items-center pt-4 border-t mt-4 opacity-50">
                  <div className="flex items-center gap-2">
                    <Label htmlFor="language-select" className="text-sm">Translate Info:</Label>
                    <Select disabled>
